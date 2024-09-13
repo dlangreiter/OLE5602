@@ -1,0 +1,582 @@
+---
+title: "Novel Factor Target Gene Prediction through Multi-Omics Datasets"
+subtitle: "OLET5602 Final Project"
+author: "A. Kapoor, D. Langreiter, S. Udit, L. Richard"
+date: "University of Sydney | `r format(Sys.time(), '%B, %Y')`"
+output:
+  xaringan::moon_reader:
+    css: ["default", "assets/sydney-fonts.css", "assets/sydney.css", "assets/custom.css"]
+    self_contained: true # if true, fonts will be stored locally
+    nature:
+      beforeInit: ["assets/remark-zoom.js"]
+      highlightStyle: github
+      highlightLines: true
+      countIncrementalSlides: false
+      ratio: '16:9' # alternatives '16:9' or '4:3' or others e.g. 13:9
+      navigation:
+        scroll: false # enable slide transitions by scrolling
+---
+
+## Introduction
+--- 
+
+.pull-left[
+
+### Goals
+  
+.font90[.content-box-purple[
+ **Main Goal:** To predict novel transcription factor target genes for Sox2 and Nanog using multi-omics datasets by applying classification techniques.
+ 
+ **Secondary Goal:** Compare with Previous Studies 
+]]
+
+```{r load_data, message=FALSE, results='hide'}
+ 
+ # Load necessary packages and data
+load("Final_Project_ESC.RData", verbose = TRUE)
+
+```
+
+```{r setup, message=FALSE, results='hide', echo=FALSE}
+
+suppressPackageStartupMessages({
+  library(reshape2)
+    library(e1071)
+    library(ggplot2)
+    library(ROCR)
+    library(calibrate)
+    library(dplyr)
+    library(tibble)
+    library(reshape2)
+    library(kernlab)
+    library(caret)
+    library(pheatmap)
+    library(randomForest)
+    library(adabag)
+    library(gbm)
+    library(ggplotify)
+    library(xgboost)
+    library(nnet)
+    library(RefManageR)
+    library(pROC)
+    library(doParallel)
+    library(calibrate)
+    library(vip)
+    library(png)
+    library(grid)
+    library(magick)
+
+})
+
+set.seed(123)
+```
+
+]
+
+.pull-right[
+
+### Background
+
+1. Transcriptional regulation is key to controlling gene expression during early embryonic development, guiding cell fate and differentiation.
+
+2. Sox2 and Nanog are essential transcription factors that maintain pluripotency in embryonic stem cells. Advances in multi-omics technologies now enable us to explore these regulatory networks and discover new target gene
+]
+
+
+---
+
+## Study Procedure (formerly Target Prediction and Validation)
+--- 
+
+- Only a subset of substrates of Sox/Nanog is known
+- Develop a classification algorithm to predict additional substrates of Sox/Nanog
+- Consider how to deal with potential imbalance class distribution. Evaluate and benchmark our predictions by comparing our predictions to the prediction in our previous study (Kim et al., 2020).
+
+
+---
+class: segue-yellow
+
+## Data Description and Exporation
+
+---
+
+## Data Exploration
+--- 
+
+- Time course expression profiles 
+- After induction of in vitro differentiation
+- 3 Types of Omics data
+  1. Transcriptome
+  2. Proteome
+  3. Epigenome - 6 Histone Markers
+  
+- Provided with a list of known Sox2/Nanog target Genes
+
+
+---
+
+## Transcriptome
+--- 
+
+.pull-left[
+
+```{r transcriptome_pca, message=FALSE, echo=FALSE}
+# PCA analysis on the correlation matrix of the transcriptome data
+cor.mat <- cor(Transcriptome)
+pca.mat <- prcomp(cor.mat)
+
+# Plot the PCA
+grp <- rownames(pca.mat$x)
+grp.col <- rainbow(nrow(pca.mat$x))
+names(grp.col) <- rownames(pca.mat$x)
+
+# Generate PCA plot
+plot(pca.mat$x[,1], pca.mat$x[,2], col=grp.col[grp], pch=19, cex=2,
+     xlab=paste0("PC1 (", round(summary(pca.mat)$importance[2,1]*100,1), "% variance)"),
+     ylab=paste0("PC2 (", round(summary(pca.mat)$importance[2,2]*100,1), "% variance)"))
+
+# Add sample labels to the plot
+calibrate::textxy(pca.mat$x[,1], pca.mat$x[,2], labs=grp, cex=0.5)
+
+```
+]
+
+.pull-right[
+**Variance Explained:**
+- PC1 (first principal component) 61.4%
+
+- PC2 (second principal component) 29.9%
+
+]
+
+---
+
+## Proteome
+--- 
+.pull-left[
+```{r proteome_pca, message=FALSE, echo=FALSE}
+cor.proteome <- cor(Proteome)
+pca.proteome <- prcomp(cor.proteome)
+
+# Using the previous correlation matrix and PCA results
+cor.proteome <- cor(Proteome)
+pca.proteome <- prcomp(cor.proteome)
+
+# Get group labels and colors
+grp <- rownames(pca.proteome$x)  # Set groups according to your data
+grp.col <- rainbow(nrow(pca.proteome$x))
+names(grp.col) <- rownames(pca.proteome$x)
+
+# Plot the PCA
+plot(pca.proteome$x[,1], pca.proteome$x[,2], col=grp.col[grp], pch=19, cex=2,
+     xlab=paste0("PC1 (", round(summary(pca.proteome)$importance[2,1]*100,1), "% variance)"),
+     ylab=paste0("PC2 (", round(summary(pca.proteome)$importance[2,2]*100,1), "% variance)"))
+
+```
+]
+
+.pull-right[
+**Variance Explained:**
+- PC1 (first principal component) explains 67.6% of the variance, capturing the majority of the variation in the proteome data.
+
+- PC2 (second principal component) explains 21% of the variance, adding another layer of explanation to the differences in protein expression.
+]
+
+---
+
+## Epigenome
+
+### 6 Histone Markers
+--- 
+
+.imageFull[
+
+```{r epigenome_pca, message=FALSE, echo=FALSE}
+
+# Set up a 2x3 plotting area
+par(mfrow = c(2, 3), mar = c(4, 4, 2, 1))  # Adjust margins as needed
+
+# Function to perform PCA and plot
+plot_pca <- function(data, title) {
+  cor_data <- cor(data)
+  pca <- prcomp(cor_data)
+  
+  grp <- rownames(pca$x)
+  grp.col <- rainbow(length(grp))
+  names(grp.col) <- grp
+  
+  plot(
+    pca$x[, 1], pca$x[, 2],
+    col = grp.col[grp],
+    pch = 19, cex = 1.5,
+    xlab = paste0("PC1 (", round(summary(pca)$importance[2, 1] * 100, 1), "% variance)"),
+    ylab = paste0("PC2 (", round(summary(pca)$importance[2, 2] * 100, 1), "% variance)"),
+    main = title
+  )
+  
+  calibrate::textxy(pca$x[, 1], pca$x[, 2], labs = grp, cex = 0.5)
+}
+
+# Plot each dataset
+plot_pca(H3K4me3, "H3K4me3")
+plot_pca(H3K27me3, "H3K27me3")
+plot_pca(H3K27ac, "H3K27ac")
+plot_pca(H3K4me1, "H3K4me1")
+plot_pca(H3K9me2, "H3K9me2")
+plot_pca(PolII, "PolII")
+
+# Reset to default single plot layout
+par(mfrow = c(1, 1))
+```
+]
+
+---
+class: segue-yellow
+
+## Target Gene Visualisation
+
+
+---
+
+## Heatmap I
+--- 
+
+.pull-left[
+```{r heatmaps_one, message=FALSE, echo=FALSE}
+
+
+# Top 100 most variable genes in the Transcriptome
+top_genes_transcriptome <- Transcriptome[order(apply(Transcriptome, 1, var), decreasing = TRUE)[1:100], ]
+
+# Heatmap for Transcriptome
+pheatmap(top_genes_transcriptome, cluster_rows = TRUE, cluster_cols = TRUE, 
+         show_rownames = FALSE, show_colnames = TRUE, 
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(50),
+         main = "Heatmap of Top 100 Most Variable Genes in Transcriptome")
+
+```
+]
+
+.pull-right[
+*Similarly*
+- 1 - 6 hr genes exhibit lower levels of expression
+- Suggest not many of top variable genes are not highly active immediately after differentiation.
+
+]
+
+
+---
+
+## Heatmap II
+--- 
+
+.pull-left[
+```{r heatmaps_two, message=FALSE, echo=FALSE}
+
+# Select top 100 most variable genes from the Proteome
+top_genes_proteome <- Proteome[order(apply(Proteome, 1, var), decreasing = TRUE)[1:100], ]
+
+# Heatmap for Proteome
+pheatmap(top_genes_proteome, cluster_rows = TRUE, cluster_cols = TRUE, 
+         show_rownames = FALSE, show_colnames = TRUE, 
+         color = colorRampPalette(c("blue", "white", "darkred"))(50),
+         main = "Heatmap of Top 100 Most Variable Genes in Proteome")
+```
+]
+
+.pull-right[
+- 1 - 6 hr genes exhibit lower levels of expression
+- Suggest not many of top variable genes are not highly active immediately after differentiation.
+
+]
+
+---
+
+## Plot Over Time
+### Time Course Expression
+--- 
+.pull-left[
+```{r time_expr, message=FALSE, echo=FALSE, warning=FALSE}
+
+# Subset key genes for visualization
+key_genes <- c("SOX2", "NANOG") 
+
+# Subset and melt Transcriptome data
+key_genes_transcriptome <- Transcriptome[key_genes, ]
+key_genes_transcriptome_melt <- melt(key_genes_transcriptome)
+colnames(key_genes_transcriptome_melt) <- c("Gene", "Timepoint", "Expression")
+key_genes_transcriptome_melt$DataType <- "Transcriptome"
+
+# Subset and melt Proteome data
+key_genes_proteome <- Proteome[key_genes, ]
+key_genes_proteome_melt <- melt(key_genes_proteome)
+colnames(key_genes_proteome_melt) <- c("Gene", "Timepoint", "Expression")
+key_genes_proteome_melt$DataType <- "Proteome"
+
+# Combine Transcriptome and Proteome data
+combined_key_genes_melt <- rbind(key_genes_transcriptome_melt, key_genes_proteome_melt)
+
+# Plot combined data
+ggplot(combined_key_genes_melt, aes(x = Timepoint, y = Expression, color = Gene, group = Gene)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  facet_wrap(~DataType, scales = "free_y") +  
+  theme_minimal() +
+  labs(title = "Time-Course Expression of Key Genes in Transcriptome and Proteome",
+       x = "Timepoint", y = "Expression Level") +
+  scale_color_manual(values = c("SOX2" = "blue", "NANOG" = "red"))
+
+```
+]
+
+.pull-right[
+- Expression of SOX2 in the transcriptome starts slightly elevated.
+- The Proteome shows SOX2 starting slightly positive however both then follow similar patterns of descent.
+]
+
+---
+class: segue-yellow
+
+## Classification Models
+
+
+---
+
+## SVM
+--- 
+
+.pull-left[
+
+### Model Details
+
+- Kernel (Radial Basis Function)
+- Support Vectors (8064)
+- Cost Parameter: C = 1 
+- Gamma: 0.0159
+- Training Accuracy: 87.79
+
+]
+
+.pull-right[
+### Model Evaluation    
+
+- Testing Accuracy:  0.7601 
+- Recall:  0.7778 
+- Precision:  0.0348 
+- F1 Score:  0.0667
+
+]
+
+---
+
+## SVM Roc
+--- 
+
+```{r, message=FALSE, echo=FALSE}
+# Read and display the image
+img <- image_read("assets/roc_svm.png")
+plot(img)
+
+```
+
+---
+
+## Random Forest (Ensemble I)
+--- 
+
+.pull-left[
+
+### Model Details
+
+- Number of Trees: 1000
+- Mtry: 5
+- OOB (out-of-bag) Error rate: 24.42%
+- Training Accuracy: 100%
+
+]
+
+.pull-right[
+### Model Evaluation
+
+- Accuracy: 0.7368421 
+- Precision: 0.03603604 
+- Recall: 0.8888889 
+- F1 Score: 0.06926407
+
+]
+
+---
+## Random Forest Hypertuning
+--- 
+
+```{r, message=FALSE, echo=FALSE}
+# Read and display the image
+img <- image_read("assets/hypertuning_rf.jpg")
+plot(img)
+
+```
+
+---
+
+## Random Forest Roc
+--- 
+
+```{r, message=FALSE, echo=FALSE}
+# Read and display the image
+img <- image_read("assets/roc_rf.png")
+plot(img)
+
+```
+
+
+---
+
+## Bagged Decision Trees (Ensemble II)
+--- 
+
+.pull-left[
+### Model Details
+- Bagged CART
+- 5 Folds Cross Validation
+- Training Accuracy: 0.7492437
+
+]
+
+.pull-right[
+### Model Evaluation
+
+- Accuracy: 0.6768666 
+- Precision: 0.0260223 
+- Recall: 0.7777778 
+- F1 Score: 0.05035971 
+
+]
+
+---
+
+## Bagged Decision Trees Roc
+--- 
+
+```{r, message=FALSE, echo=FALSE}
+# Read and display the image
+img <- image_read("assets/roc_bagged_dt.png")
+plot(img)
+
+```
+
+---
+
+## XGBoost (Ensemble III)
+--- 
+
+.pull-left[
+
+### Model Details
+
+- There wasn't much fluctuation
+- Hypertuning the model would not improve performance
+- High Cost at small marginal performance increase
+
+]
+
+.pull-right[
+### Model Evaluation
+- Accuracy: 0.9889841
+- Precision: NA
+- Recall: 0
+- F1 Score: NA
+
+]
+
+---
+
+## XGBoost Model Hypertuning
+--- 
+
+```{r, message=FALSE, echo=FALSE}
+# Read and display the image
+img <- image_read("assets/hypertuning_xgb.png")
+plot(img)
+
+```
+
+---
+
+## XGBoost Confusion Matrix
+--- 
+.pull-left[
+```{r, message=FALSE, echo=FALSE}
+# Read and display the image
+img <- image_read("assets/confusion_xgb.png")
+plot(img)
+
+```
+
+]
+
+.pull-right[
+- **True Positives (TP):** 7 genes were correctly predicted as "OSN" by the SVM model.
+- **False Positives (FP):** 2 genes were incorrectly predicted as "Other" but were actually "OSN".
+- **True Negatives (TN):** 614 genes were correctly predicted as "Other".
+- **False Negatives (FN):** 194 genes were incorrectly predicted as "OSN" but were actually "Other".
+]
+
+
+---
+
+
+## XGBoost Roc
+--- 
+
+```{r, message=FALSE, echo=FALSE}
+# Read and display the image
+img <- image_read("assets/roc_xgb.png")
+plot(img)
+
+```
+
+---
+
+## Comparision
+
+The Random Forest model performed slightly better over the SVM model, with 8 correct predictions for "OSN" compared to SVM’s 7. However, it also incorrectly predicted 208 genes as "Other" when they were actually "OSN"
+
+Possible reasons for this could include:
+- Test set containing a significant imbalance between the OSN and other classes, with only 9 OSN samples and 808 Other samples. This imbalance could explain why both models struggle to accurately predict the minority class. (OSN)
+- Both models perform well in predicting Other Class, with both RF and SVM both achieving high true negative rates.
+
+
+---
+class: segue-yellow
+
+## Discussion
+
+---
+
+## Results
+--- 
+
+- **Final Choice of Model: XGB**
+  - Ensemble Method/Slow Learner/Class Imbalance
+  - Most robust model
+- Predicts Approximately 2000 Target
+  - This is much higher than 400 from the previous study. However, accuracy is not low!?
+  - May be due to fewer data points or current downsampling.
+
+
+---
+
+## Future Work
+--- 
+
+- Class Imbalance Solutions
+  - Further EDA to decide other means of removing data, or possibly leaving data imbalanced.
+
+- Further Evaluation (Precision, Recall, F1-Score and AUC-ROC)
+
+
+---
+class: segue
+
+
+## Thank You!

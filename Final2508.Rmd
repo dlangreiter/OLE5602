@@ -1,0 +1,978 @@
+---
+title: Novel Factor Target Gene Prediction
+subtitle: through Multi-Omics Datasets
+author: "A. Kapoor, D. Langreiter, S. Udit, L. Richard"
+date: "University of Sydney | OLET5602 | `r format(Sys.time(), '%B, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme:
+      bg: "white"
+      fg: "black"
+      primary: "#050A30"
+      base_font:
+        google: Montserrat
+      heading_font:
+        google: Merriweather
+  pdf_document:
+    extra_dependencies: ["geometry"]
+header-includes:
+  - \usepackage{listings}
+  - \lstset{breaklines=true}
+---
+
+# Introduction
+
+## Aim
+
+The aim of the project is to classify genes as targets for novel transcription factors. The focus of the study in particularly on Sox2 and Nanog (of the OSN Factors::w Oct4, Sox2, Nanog) embryonic stem cell (ESC) differentiation. 
+
+This is a particularly important, and ongoing, area of research as there is some evidence that OSN factors are regulators of stem cell maintenance.
+
+## Background
+
+Embryonic stem cells (ESCs) differentiate into a diverse array of cell types, a process fundamental to development. The regulation of ESC differentiation and cell fate decisions is intricately controlled by transcription factors. These transcription factors operate within complex transcriptional networks that influence gene expression through direct binding to DNA and interaction with other regulatory proteins ([Theunissen and Jaenisch, 2017](https://doi.org/10.1038/nrm.2017.15)).
+
+Transcriptional regulation is crucial in defining cell identity and function during differentiation. Transcription factors can act as activators/enhancers or repressors/silencers, modulating the expression of genes that drive cell lineage specification. Some studies have shown that Sox2 ([Masui et al., 2007](https://doi.org/10.1038/nature06015)) and Nanog ([Masui et al., 2007](https://doi.org/10.1038/nature06015)) are key regulators of stem cell maintenance and differentiation. Oct4, Sox2, and Nanog, collectively known as the 'OSN' factors, are well-established in their roles as regulators of stem cell maintenance ([Yeo and Ng, 2012](https://doi.org/10.1038/nrm3430)).
+
+Recent advancements in omics technologies have enabled high-temporal-resolution profiling of genome-wide transcriptional and epigenetic events. The time-course multi-omic profiling of ESC differentiation provides a unique opportunity to reveal previously unknown aspects of stem cells during pluripotency progression ([Yang et al., 2019](https://doi.org/10.1016/j.cell.2019.02.035)). Multi-omics approaches, integrating genomics, transcriptomics, proteomics, and epigenomics, can provide us unprecedented insights into the regulatory networks governing pluripotency and differentiation.
+
+In this study, we aim to predict novel target genes of Sox2 and Nanog by leveraging multi-omics data from ESC differentiation experiments. By analyzing changes in gene expression, protein interactions, and epigenetic modifications, we seek to identify new substrates of these critical transcription factors. This approach will enhance our understanding of the transcriptional regulation of ESC differentiation and contribute to the development of more precise strategies for manipulating stem cell behavior in regenerative medicine.
+
+## Dataset Overview
+
+The data collects time-course differentiation of genes at various omics layers. The ones that the study will focus on are below.
+
+For the Purposes of this study we refer to OSN Labels as genes that target for transcription factors: Sox2 and Nanog.
+
+- **Transcriptome:** Time-course mRNA profiles during ESC differentiation.
+
+- **Proteome:** Time-course protein expression profiles during ESC differentiation.
+
+- **Epigenome:** Time-course ESC differentiation epigenome profiles of 6 histone marks.
+
+\newpage
+
+# Exploratory Data Analysis (EDA)
+
+## Load Required Libraries and Data
+
+We start by loading the necessary R packages and the dataset `Final_Project_ESC.RData`, which contains the transcriptome, proteome, and epigenome data, along with a subset of known Sox2/Nanog target genes.
+
+```{r setup, echo=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+htmltools::tags$style("
+  pre {
+    white-space: pre-wrap;      /* Wrap text within pre blocks */
+    word-wrap: break-word;      /* Allows long words to be broken and wrapped */
+    overflow-wrap: break-word;
+  }
+")
+```
+
+```{r}
+
+# Load necessary packages and data
+load("Final_Project_ESC.RData", verbose = TRUE)
+
+suppressPackageStartupMessages({
+    library(e1071)
+    library(ggplot2)
+    library(ROCR)
+    library(calibrate)
+    library(dplyr)
+    library(tibble)
+    library(reshape2)
+    library(kernlab)
+    library(caret)
+    library(caretEnsemble)
+    library(pheatmap)
+    library(randomForest)
+    library(adabag)
+    library(gbm)
+    library(ggplotify)
+    library(xgboost)
+    library(nnet)
+    library(RefManageR)
+    library(pROC)
+    library(doParallel)
+    library(calibrate)
+    library(vip)
+})
+
+set.seed(123)
+
+```
+
+## Describe and explore the Data set details
+
+Before beginning data analysis it is important understand and investigate the data. The goal of this report is to predict to predict novel transcription factor target genes from multi-omics data. For each of our datasets, one can look at the structure of the data and perform PCA Analysis as means of identifying trends in the dataset.
+
+Below is the temporal expression of the Transcriptome, Proteome and Epigiome datasets at timepoints 0, 1, 6, 12, 24, 36, 48 hours.
+
+### Transcriptome
+
+```{r}
+
+head(Transcriptome)
+dim(Transcriptome)
+colnames(Transcriptome)
+
+# PCA analysis on the correlation matrix of the transcriptome data
+cor.mat <- cor(Transcriptome)
+pca.mat <- prcomp(cor.mat)
+
+# Plot the PCA
+grp <- rownames(pca.mat$x)
+grp.col <- rainbow(nrow(pca.mat$x))
+names(grp.col) <- rownames(pca.mat$x)
+
+# Generate PCA plot
+plot(pca.mat$x[,1], pca.mat$x[,2], col=grp.col[grp], pch=19, cex=2,
+     xlab=paste0("PC1 (", round(summary(pca.mat)$importance[2,1]*100,1), "% variance)"),
+     ylab=paste0("PC2 (", round(summary(pca.mat)$importance[2,2]*100,1), "% variance)"))
+
+# Add sample labels to the plot
+calibrate::textxy(pca.mat$x[,1], pca.mat$x[,2], labs=grp, cex=0.5)
+
+```
+
+### Proteome
+
+```{r}
+
+cor.proteome <- cor(Proteome)
+pca.proteome <- prcomp(cor.proteome)
+summary(pca.proteome)$importance
+
+# Using the previous correlation matrix and PCA results
+cor.proteome <- cor(Proteome)
+pca.proteome <- prcomp(cor.proteome)
+
+# Get group labels and colors
+grp <- rownames(pca.proteome$x)  # Set groups according to your data
+grp.col <- rainbow(nrow(pca.proteome$x))
+names(grp.col) <- rownames(pca.proteome$x)
+
+# Plot the PCA
+plot(pca.proteome$x[,1], pca.proteome$x[,2], col=grp.col[grp], pch=19, cex=2,
+     xlab=paste0("PC1 (", round(summary(pca.proteome)$importance[2,1]*100,1), "% variance)"),
+     ylab=paste0("PC2 (", round(summary(pca.proteome)$importance[2,2]*100,1), "% variance)"))
+
+```
+
+
+### H3K4ME3
+
+```{r}
+
+# PCA analysis on the correlation matrix of the H3K4me3 data
+cor.h3k4me3 <- cor(H3K4me3)
+pca.h3k4me3 <- prcomp(cor.h3k4me3)
+
+# Get group labels and colors
+grp <- rownames(pca.h3k4me3$x)
+grp.col <- rainbow(nrow(pca.h3k4me3$x))
+names(grp.col) <- rownames(pca.h3k4me3$x)
+
+# Generate PCA plot for H3K4me3
+plot(pca.h3k4me3$x[,1], pca.h3k4me3$x[,2], col=grp.col[grp], pch=19, cex=2,
+     xlab=paste0("PC1 (", round(summary(pca.h3k4me3)$importance[2,1]*100,1), "% variance)"),
+     ylab=paste0("PC2 (", round(summary(pca.h3k4me3)$importance[2,2]*100,1), "% variance)"))
+
+# Add sample labels to the plot
+calibrate::textxy(pca.h3k4me3$x[,1], pca.h3k4me3$x[,2], labs=grp, cex=0.5)
+
+```
+
+### H3K27ME3
+
+```{r}
+
+# PCA analysis for H3K27me3 data
+cor.h3k27me3 <- cor(H3K27me3)
+pca.h3k27me3 <- prcomp(cor.h3k27me3)
+
+# Update group labels and colors for H3K27me3
+grp.h3k27me3 <- rownames(pca.h3k27me3$x)
+grp.col.h3k27me3 <- rainbow(nrow(pca.h3k27me3$x))
+names(grp.col.h3k27me3) <- rownames(pca.h3k27me3$x)
+
+# Generate PCA plot for H3K27me3
+plot(pca.h3k27me3$x[,1], pca.h3k27me3$x[,2], col=grp.col.h3k27me3[grp.h3k27me3], pch=19, cex=2,
+     xlab=paste0("PC1 (", round(summary(pca.h3k27me3)$importance[2,1]*100,1), "% variance)"),
+     ylab=paste0("PC2 (", round(summary(pca.h3k27me3)$importance[2,2]*100,1), "% variance)"))
+
+# Correctly label the samples for H3K27me3
+calibrate::textxy(pca.h3k27me3$x[,1], pca.h3k27me3$x[,2], labs=grp.h3k27me3, cex=0.5)
+
+```
+
+### H3K27AC
+
+```{r}
+
+# PCA analysis for H3K27ac data
+cor.h3k27ac <- cor(H3K27ac)
+pca.h3k27ac <- prcomp(cor.h3k27ac)
+
+# Update group labels and colors for H3K27ac
+grp.h3k27ac <- rownames(pca.h3k27ac$x)
+grp.col.h3k27ac <- rainbow(nrow(pca.h3k27ac$x))
+names(grp.col.h3k27ac) <- rownames(pca.h3k27ac$x)
+
+# Generate PCA plot for H3K27ac
+plot(pca.h3k27ac$x[,1], pca.h3k27ac$x[,2], col=grp.col.h3k27ac[grp.h3k27ac], pch=19, cex=2,
+     xlab=paste0("PC1 (", round(summary(pca.h3k27ac)$importance[2,1]*100,1), "% variance)"),
+     ylab=paste0("PC2 (", round(summary(pca.h3k27ac)$importance[2,2]*100,1), "% variance)"))
+
+# Correctly label the samples for H3K27ac
+calibrate::textxy(pca.h3k27ac$x[,1], pca.h3k27ac$x[,2], labs=grp.h3k27ac, cex=0.5)
+
+```
+
+
+### H3K4ME1
+
+```{r}
+
+# PCA analysis for H3K4me1 data
+cor.h3k4me1 <- cor(H3K4me1)
+pca.h3k4me1 <- prcomp(cor.h3k4me1)
+
+# Define the group labels and colors specifically for H3K4me1 data
+grp.h3k4me1 <- rownames(pca.h3k4me1$x)
+grp.col.h3k4me1 <- rainbow(nrow(pca.h3k4me1$x))
+names(grp.col.h3k4me1) <- rownames(pca.h3k4me1$x)
+
+# Generate PCA plot for H3K4me1
+plot(pca.h3k4me1$x[,1], pca.h3k4me1$x[,2], col=grp.col.h3k4me1[grp.h3k4me1], pch=19, cex=2,
+     xlab=paste0("PC1 (", round(summary(pca.h3k4me1)$importance[2,1]*100,1), "% variance)"),
+     ylab=paste0("PC2 (", round(summary(pca.h3k4me1)$importance[2,2]*100,1), "% variance)"))
+
+# Correctly label the samples for H3K4me1
+calibrate::textxy(pca.h3k4me1$x[,1], pca.h3k4me1$x[,2], labs=grp.h3k4me1, cex=0.5)
+
+```
+
+### H3K9ME2
+
+```{r}
+
+# PCA analysis for H3K9me2 data
+cor.h3k9me2 <- cor(H3K9me2)
+pca.h3k9me2 <- prcomp(cor.h3k9me2)
+
+# Define the group labels and colors specifically for H3K9me2 data
+grp.h3k9me2 <- rownames(pca.h3k9me2$x)
+grp.col.h3k9me2 <- rainbow(nrow(pca.h3k9me2$x))
+names(grp.col.h3k9me2) <- rownames(pca.h3k9me2$x)
+
+# Generate PCA plot for H3K9me2
+plot(pca.h3k9me2$x[,1], pca.h3k9me2$x[,2], col=grp.col.h3k9me2[grp.h3k9me2], pch=19, cex=2,
+     xlab=paste0("PC1 (", round(summary(pca.h3k9me2)$importance[2,1]*100,1), "% variance)"),
+     ylab=paste0("PC2 (", round(summary(pca.h3k9me2)$importance[2,2]*100,1), "% variance)"))
+
+# Correctly label the samples for H3K9me2
+calibrate::textxy(pca.h3k9me2$x[,1], pca.h3k9me2$x[,2], labs=grp.h3k9me2, cex=0.5)
+
+```
+
+
+### Pol III
+
+```{r}
+
+# PCA analysis for PolII data
+cor.polii <- cor(PolII)
+pca.polii <- prcomp(cor.polii)
+
+# Define the group labels and colors specifically for PolII data
+grp.polii <- rownames(pca.polii$x)
+grp.col.polii <- rainbow(nrow(pca.polii$x))
+names(grp.col.polii) <- rownames(pca.polii$x)
+
+# Generate PCA plot for PolII
+plot(pca.polii$x[,1], pca.polii$x[,2], col=grp.col.polii[grp.polii], pch=19, cex=2,
+     xlab=paste0("PC1 (", round(summary(pca.polii)$importance[2,1]*100,1), "% variance)"),
+     ylab=paste0("PC2 (", round(summary(pca.polii)$importance[2,2]*100,1), "% variance)"))
+
+# Correctly label the samples for PolII
+calibrate::textxy(pca.polii$x[,1], pca.polii$x[,2], labs=grp.polii, cex=0.5)
+
+
+```
+
+\newpage
+
+# Further IDA Analysis
+
+Below are heat maps of which show the top 100 most variable gene-associated levels for each data set. These heat maps are useful for identifying patterns of gene expression and histone modification that can correlate with different stages of ESC differentiation. They help identify specific genes and pathways which are involved in differentiation which can be further validated via analysis. The color gradient in each heat map typical ranges from blue (low expression or modification) to red (high expression or modification). The dendograms on the columns and rows indicate clustering (hierarchical), grouping genes and time points based on similarity. These clusters suggest co-regulation or similar functional roles across genes.
+
+
+```{r}
+
+# Top 100 most variable genes in the Transcriptome
+top_genes_transcriptome <- Transcriptome[order(apply(Transcriptome, 1, var), decreasing = TRUE)[1:100], ]
+
+# Heatmap for Transcriptome
+pheatmap(top_genes_transcriptome, cluster_rows = TRUE, cluster_cols = TRUE, 
+         show_rownames = FALSE, show_colnames = TRUE, 
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(50),
+         main = "Heatmap of Top 100 Most Variable Genes in Transcriptome")
+```
+
+
+
+```{r}
+# Select top 100 most variable genes from the Proteome
+top_genes_proteome <- Proteome[order(apply(Proteome, 1, var), decreasing = TRUE)[1:100], ]
+
+# Heatmap for Proteome
+pheatmap(top_genes_proteome, cluster_rows = TRUE, cluster_cols = TRUE, 
+         show_rownames = FALSE, show_colnames = TRUE, 
+         color = colorRampPalette(c("blue", "white", "darkred"))(50),
+         main = "Heatmap of Top 100 Most Variable Genes in Proteome")
+```
+
+In the above heatmap regarding the top 100 most variable genes within the transcriptome dataset, from the 1hr to 6hr time period most genes exhibit lower levels of expression, suggesting that many of the top variable genes are not highly active immediately after differentiation begins. This ramps up at later time points, particularity 48hr and 72hr showing distinct patterns where some genes are highly expressed while others remain low. This suggest high activity meaning certain genes are playing critical roles in later stages of differentiation. The key differentiation between the transcriptome and proteome heatmaps are the levels of neutral activity during the inital hours with Proteome having a higher level of activity throughout most time periods.
+
+
+
+Time-Course Line Plots of Gene Expression:
+Below is a graph
+
+
+```{r}
+
+# Subset key genes for visualization
+key_genes <- c("SOX2", "NANOG") 
+
+# Subset and melt Transcriptome data
+key_genes_transcriptome <- Transcriptome[key_genes, ]
+key_genes_transcriptome_melt <- melt(key_genes_transcriptome)
+colnames(key_genes_transcriptome_melt) <- c("Gene", "Timepoint", "Expression")
+key_genes_transcriptome_melt$DataType <- "Transcriptome"
+
+# Subset and melt Proteome data
+key_genes_proteome <- Proteome[key_genes, ]
+key_genes_proteome_melt <- melt(key_genes_proteome)
+colnames(key_genes_proteome_melt) <- c("Gene", "Timepoint", "Expression")
+key_genes_proteome_melt$DataType <- "Proteome"
+
+# Combine Transcriptome and Proteome data
+combined_key_genes_melt <- rbind(key_genes_transcriptome_melt, key_genes_proteome_melt)
+
+# Plot combined data
+ggplot(combined_key_genes_melt, aes(x = Timepoint, y = Expression, color = Gene, group = Gene)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  facet_wrap(~DataType, scales = "free_y") +  
+  theme_minimal() +
+  labs(title = "Time-Course Expression of Key Genes in Transcriptome and Proteome",
+       x = "Timepoint", y = "Expression Level") +
+  scale_color_manual(values = c("SOX2" = "blue", "NANOG" = "red"))
+
+```
+
+The expression of SOX2 in the transcriptome starts at a slightly elevated level at 0hr, peaks around 6hr and then begins to steadily decline. The Proteome shows SOX2 starting slight postive expression at 0hr, peaks early at 1hr and thens shows similar decline. Both exhibit a general trend of initial upregulation followed by downregulation across time in both the proteome and transcriptome datasets. This suggests that the transcriptional activity might be initially high to kickstart certain cellular process but is followed by a reduction as cells progress through differential.
+
+\newpage
+
+# Classification
+
+The main challenge of this study will be to classify. The task is to classify, genes as a target gene for a subset of the target genes identified in a larger previous study (Kim et al., 2020) on the same topic: which identified targets over multiomics datasets (TF ChIP-seq, transcriptome, epigenome, proteome and 3D chromatin conformation data). 
+
+## Filter and Combine Datasets
+
+In order to properly model and predicting novel transcription factors target genes we join the 8 datasets together and perform our calculations on the larger dataset.
+
+To ensure consistency across datasets, we filter each dataset to include only the common genes present in all omics layers. We then combine these filtered datasets into a single data frame for further analysis.
+
+*This can be done as the timepoints for all the datasets are consistent. Allowing for prediction on on gene information from different omics layers.*
+
+```{r}
+# Verify all data has the same set of genes
+genes <- intersect(rownames(Transcriptome), rownames(Proteome))
+genes <- intersect(genes, rownames(H3K4me3))
+genes <- intersect(genes, rownames(H3K27me3))
+genes <- intersect(genes, rownames(H3K27ac))
+genes <- intersect(genes, rownames(H3K4me1))
+genes <- intersect(genes, rownames(H3K9me2))
+genes <- intersect(genes, rownames(PolII))
+```
+
+```{r}
+# Filter each dataset for the common genes
+Transcriptome_filter <- Transcriptome[genes, ]
+Proteome_filter <- Proteome[genes, ]
+H3K4me3_filter <- H3K4me3[genes, ]
+H3K27me3_filter <- H3K27me3[genes, ]
+H3K27ac_filter <- H3K27ac[genes, ]
+H3K4me1_filter <- H3K4me1[genes, ]
+H3K9me2_filter <- H3K9me2[genes, ]
+PolII_filter <- PolII[genes, ]
+
+# Confirm that all datasets share the same gene
+identical(rownames(Transcriptome_filter), rownames(H3K4me3_filter))
+identical(rownames(Proteome_filter), rownames(H3K4me3_filter))
+identical(rownames(H3K27ac_filter), rownames(H3K4me3_filter))
+identical(rownames(H3K4me1_filter), rownames(H3K4me3_filter))
+identical(rownames(H3K9me2_filter), rownames(H3K4me3_filter))
+identical(rownames(PolII_filter), rownames(H3K4me3_filter))
+```
+
+```{r}
+# Rename columns to avoid conflicts
+colnames(Transcriptome_filter) <- paste("T_", colnames(Transcriptome_filter), sep = "")
+colnames(Proteome_filter) <- paste("P_", colnames(Proteome_filter), sep = "")
+colnames(H3K4me3_filter) <- paste("H3K4me3_", colnames(H3K4me3_filter), sep = "")
+colnames(H3K27me3_filter) <- paste("H3K27me3_", colnames(H3K27me3_filter), sep = "")
+colnames(H3K27ac_filter) <- paste("H3K27ac_", colnames(H3K27ac_filter), sep = "")
+colnames(H3K4me1_filter) <- paste("H3K4me1_", colnames(H3K4me1_filter), sep = "")
+colnames(H3K9me2_filter) <- paste("H3K9me2_", colnames(H3K9me2_filter), sep = "")
+colnames(PolII_filter) <- paste("PolII_", colnames(PolII_filter), sep = "")
+
+# Combine the datasets
+combined_data <- cbind(
+  Transcriptome_filter,
+  Proteome_filter,
+  H3K4me3_filter,
+  H3K27me3_filter,
+  H3K27ac_filter,
+  H3K4me1_filter,
+  H3K9me2_filter,
+  PolII_filter
+)
+
+# Add the labels
+label <- ifelse(genes %in% OSN_target_genes_subset, "OSN", "Other")
+combined_data <- data.frame(combined_data)
+combined_data$label <- factor(label)
+```
+
+```{r}
+# Number of genes which are known to be targets for Sox2 and Nanog
+length(OSN_target_genes_subset)
+```
+
+We have 100 known target genes for OSN, and as seen below the we have 95 genes that have been identified as novel Sox2/Nanog targets on our combined filtered dataset.
+
+```{r}
+# Check the initial label distribution
+print(table(combined_data$label))
+```
+
+### Data Splitting and Balancing
+
+The dataset is split into training (90%) and testing (10%) sets. The label column is reassigned to the test set to confirm that it is included correctly.
+
+```{r}
+# Split the dataset into training (90%) and testing (10%) sets
+set.seed(123)
+train_index <- createDataPartition(combined_data$label, p = 0.9, list = FALSE)
+
+train_data <- combined_data[train_index, ]
+test_data <- combined_data[-train_index, ]
+
+# Reassign the label column to test_data
+test_data$label <- combined_data[-train_index, "label"]
+
+```
+
+As you can see below there is a large imbalance between OSN and other classes. Not addressed right now could lead to biases later on in the model, especially with a large imbalance like that shown.
+
+```{r distributions_of_labels}
+
+# Check the distribution of labels in the training and test sets
+print("Training set label distribution:")
+print(table(train_data$label))
+
+print("Test set label distribution:")
+print(table(test_data$label))
+
+```
+
+### Balancing the Training Data
+
+To address the imbalance in the dataset, downsampling is used on both classes, `OSN` and `Other`, to make sure they are represented equally. This technique improves the model's accuracy and generalization by preventing bias towards the more frequent class.
+
+```{r}
+# Balance the training data using downsampling
+set.seed(123)
+downsampled_train_data <- downSample(x = train_data[, -ncol(train_data)],
+                                     y = train_data$label,
+                                     list = FALSE, yname = "label")
+
+# Display the new balanced label distribution
+print("Balanced training set label distribution:")
+table(downsampled_train_data$label)
+
+# Display dimensions of the balanced training data
+dim(downsampled_train_data)
+```
+
+```{r}
+# Final check of training dataset dimensions
+print(dim(downsampled_train_data))
+
+```
+
+## Model Training
+
+We train three machine learning models, SVM (with the radial kernel), Random Forest and a Neural Network, using the balanced training dataset performance under balanced class distribution conditions.
+
+### SVM
+
+The first model we train is a SVM with a radial curve. SVMS are well suited to working with higher dimension data, and thus the studies first choice at modeling the data. The Radial kernel (or Radial Basis Function) and can be quite effective at mapping non-linear data, high-dim data. 
+
+```{r}
+
+set.seed(123)
+
+# Train an SVM model on the downsampled training data with radial basis function kernel
+svm_model <- svm(label ~ ., data = downsampled_train_data, kernel = "radial", probability = TRUE)
+
+svm_predictions <- predict(svm_model, test_data, probability = TRUE)
+
+true_labels <- test_data$label
+
+# Generate a confusion matrix
+confusion <- confusionMatrix(svm_predictions, true_labels)
+
+# Extract accuracy, recall, precision and F1 score
+accuracy <- confusion$overall['Accuracy']
+recall <- confusion$byClass['Sensitivity']  # Sensitivity is the same as recall
+precision <- confusion$byClass['Precision']
+f1_score <- confusion$byClass['F1']
+
+cat("Testing Accuracy: ", round(accuracy, 4), "\n")
+cat("Recall: ", round(recall, 4), "\n")
+cat("Precision: ", round(precision, 4), "\n")
+cat("F1 Score: ", round(f1_score, 4), "\n")
+
+```
+
+Now, it is possible to visualise this using a ROC Plot.
+
+```{r roc_svm}
+
+svm_prob <- attr(svm_predictions, "probabilities")[,2]
+
+roc_curve <- roc(test_data$label, svm_prob)
+
+plot(roc_curve, col = "blue", lwd = 2, main = "ROC Curve for SVM Model")
+
+# Add AUC to the plot
+auc(roc_curve)
+
+```
+
+
+### Random Forest
+
+Here we train our second model on the down sampled data. The dataset performed best with better with a greater number of trees, and so we have used 1000 for our number of trees. 
+
+
+```{r}
+
+# Train a Random Forest model
+rf_model <- randomForest(label ~ ., data = downsampled_train_data, ntree = 1000)
+
+```
+
+Here we improve on our model by performing cross-validation while training the Random Forest, and fine-tuning our hyperparameters as to not over fit the model.
+
+```{r}
+
+# Define tuning grid and control setup
+tuning_grid <- expand.grid(mtry = seq(2, 5, by = 1))
+control <- trainControl(method = "cv", number = 5)
+
+# Tuning the model
+set.seed(123)
+tuned_rf_model <- train(label ~ ., data = downsampled_train_data,
+                        method = "rf", trControl = control, tuneGrid = tuning_grid)
+
+# Plotting tuning results
+plot(tuned_rf_model$finalModel, main="Random Forest Tuning")
+
+```
+
+Before conducting proper evaluation later in this report, we can briefly evaluate the performance of this model.
+
+```{r}
+
+# Predict probabilities on the testing data using the tuned Random Forest model
+rf_predictions <- predict(tuned_rf_model, newdata = test_data)
+
+confusion_matrix <- confusionMatrix(rf_predictions, test_data$label)
+
+# Extract and display metrics
+accuracy <- confusion_matrix$overall['Accuracy']
+precision <- confusion_matrix$byClass['Precision']
+recall <- confusion_matrix$byClass['Recall']
+f1_score <- confusion_matrix$byClass['F1']
+
+cat("Accuracy:", accuracy, "\n")
+cat("Precision:", precision, "\n")
+cat("Recall:", recall, "\n")
+cat("F1 Score:", f1_score, "\n")
+
+```
+
+Upon viewing the performance of the model above, it was clear that more could be done to optimise the model. As a result, the team decided to experiment with other models to evaluate the effectiveness of variations of standard random forest models.
+
+Lastly, re-predicting for ROC:
+
+```{r}
+
+# Predict probabilities on the testing data using the tuned Random Forest model
+rf_prob_predictions <- predict(tuned_rf_model, newdata = test_data, type = "prob")
+
+rf_pred_probs <- rf_prob_predictions[,2]
+
+roc_curve_rf <- roc(response = test_data$label, predictor = rf_pred_probs)
+
+# Plot ROC curve
+plot(roc_curve_rf, main = "ROC Curve for Random Forest")
+
+
+```
+
+### Bagging with Bagged Trees
+
+Bagging improves stability and accuracy by reducing variance and avoiding overfitting.
+
+```{r}
+
+bagged_trees <- train(
+  label ~ .,
+  data = downsampled_train_data,
+  method = "treebag",
+  trControl = trainControl(method = "cv", number = 5),
+  tuneLength = 5
+)
+print(bagged_trees)
+
+```
+
+#### Evaluation of Bagged Trees
+
+Bagging is a means of of ensemble training. We have choosen decision trees as the base model. 
+```{r}
+
+bagged_trees_predictions <- predict(bagged_trees, newdata = test_data)
+
+confusion_matrix_bagged <- confusionMatrix(bagged_trees_predictions, test_data$label)
+
+accuracy_bagged <- confusion_matrix_bagged$overall['Accuracy']
+precision_bagged <- confusion_matrix_bagged$byClass['Precision']
+recall_bagged <- confusion_matrix_bagged$byClass['Recall']
+f1_score_bagged <- confusion_matrix_bagged$byClass['F1']
+
+cat("Bagged Trees Model Metrics:\n")
+cat("Accuracy:", accuracy_bagged, "\n")
+cat("P recision:", precision_bagged, "\n")
+cat("Recall:", recall_bagged, "\n")
+cat("F1 Score:", f1_score_bagged, "\n")
+
+```
+
+
+### Gradient Boosting with Hyperparameter Tuning Using XGBoost (using parallel processing)
+
+For hyperparameters tuning we define the grid of parameters below and train an XGB Model on the downsampled data. We use cross validation as means to providing a reliable model that is not overfit, and allow the model to be trained in parallel.
+
+```{r}
+
+# Set up a tuning grid for xgboost
+tune_grid_xgb <- expand.grid(
+  nrounds = c(100, 200),
+  max_depth = c(3, 6),
+  eta = c(0.1, 0.3),
+  gamma = c(0, 0.1),
+  colsample_bytree = c(0.5, 1),
+  min_child_weight = c(1, 10),
+  subsample = c(0.5, 1)
+)
+
+# Enable parallel processing
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+# Define control function with ROC as the metric
+train_control <- trainControl(
+  method = "cv",
+  number = 3,
+  savePredictions = "final",
+  verboseIter = TRUE,
+  allowParallel = TRUE,
+  summaryFunction = twoClassSummary,  # Computes ROC and Sensitivity among others
+  classProbs = TRUE,  # Needed for ROC and AUC calculations
+  selectionFunction = "best"  # Chooses the best tuning parameters based on ROC
+)
+
+# Train xgboost model with tuning
+xgb_model_tuned <- train(
+  label ~ .,
+  data = train_data, # Run on full training set
+  method = "xgbTree",
+  trControl = train_control,
+  tuneGrid = tune_grid_xgb,
+  metric = "ROC"
+)
+
+# Stop and unregister parallel processing
+stopCluster(cl)
+registerDoSEQ()
+
+# Print the best tuning parameters
+print(xgb_model_tuned$bestTune)
+
+# Prepare data for plotting
+results <- xgb_model_tuned$results
+results$interaction <- interaction(results$max_depth, results$eta, results$gamma,
+                                     results$colsample_bytree,
+                                     results$min_child_weight,
+                                     results$subsample, drop = TRUE)
+
+results$interaction <- factor(results$interaction)
+results$simplified_interaction <- with(results, paste(max_depth, eta, sep=","))
+
+ggplot(data = results, aes(x = simplified_interaction, y = ROC)) +
+  geom_point(aes(color = as.factor(nrounds))) +
+  geom_line(aes(group = simplified_interaction, color = as.factor(nrounds))) +
+  facet_wrap(~ gamma, scales = "free_x") +
+  labs(title = "XGBoost Model Performance Across Hyperparameters",
+       x = "Hyperparameter Combination (Max Depth, ETA)",
+       y = "ROC AUC",
+       color = "Number of Rounds") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+```
+
+As this graph isn't very useful, especially given the varying performance from various hypertuned models, we can make this clearer by removing all outputs below 0.5 to view the performance of the more successful models.
+
+```{r}
+
+# Filter the data to include only ROC AUC values above 0.5
+filtered_results <- results[results$ROC > 0.5,]
+
+# Create a readable label for the x-axis (simplifying or detailing as needed)
+filtered_results$readable_interaction <- with(filtered_results, paste("Depth:", max_depth, "ETA:", eta, "Gamma:", gamma, sep=" "))
+
+# Plot the performance focusing on ROC AUC values above 0.5
+ggplot(data = filtered_results, aes(x = readable_interaction, y = ROC)) +
+  geom_point(aes(color = as.factor(nrounds))) +
+  geom_line(aes(group = readable_interaction, color = as.factor(nrounds))) +
+  labs(title = "XGBoost Model Performance (ROC AUC > 0.5)",
+       x = "Hyperparameter Combination",
+       y = "ROC AUC",
+       color = "Number of Rounds") +
+  scale_y_continuous(limits = c(0.75, 0.85), breaks = seq(0.5, 1, by = 0.025)) +  # Setting y-axis to start at 0.5
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        plot.title = element_text(hjust = 0.5))  # Centering the plot title
+
+```
+
+It is notable that for all of the objectively 'high-performing' models (those with an ROC AUC greater than 0.5), there wasn't much fluctuation beyond a score of ± 0.05 about 0.8, or a 6.25% variation. Therefore, the hypothesis that hypertuning the model would improve its performance does not hold, as the cost of generating such a model does not warrant the marginal increase in performance.
+
+Lastly lets evaluate performance on the validation data.
+
+```{r}
+
+set.seed(123)
+xgb_prob <- predict(xgb_model_tuned, newdata = test_data, type = "prob")
+
+xgb_pred_probs <- xgb_prob[,2]
+
+roc_curve_xgb <- roc(response = test_data$label, predictor = xgb_pred_probs)
+
+plot(roc_curve_xgb, main = "ROC Curve for XGBoost")
+
+```
+
+Lastly the metrics.
+
+```{r}
+
+xgb_predictions <- predict(xgb_model_tuned, newdata = test_data)
+
+confusion_matrix_xgb <- confusionMatrix(xgb_predictions, test_data$label)
+
+accuracy_xgb <- confusion_matrix_xgb$overall['Accuracy']
+precision_xgb <- confusion_matrix_xgb$byClass['Precision']
+recall_xgb <- confusion_matrix_xgb$byClass['Recall']
+f1_score_xgb <- confusion_matrix_xgb$byClass['F1']
+
+cat("XGBoost Model Metrics:\n")
+cat("Accuracy:", accuracy_xgb, "\n")
+cat("Precision:", precision_xgb, "\n")
+cat("Recall:", recall_xgb, "\n")
+cat("F1 Score:", f1_score_xgb, "\n")
+
+```
+
+## Extended Model Training - Neural Networks
+
+To extend our understanding of the dataset and compare our Random Forest models against other classifiers, the team decided to evaluate the use of a neural network on the same training data.
+
+### Preparing Data and Feature Scaling
+
+Proper data scaling is necessary for the performance of a Neural Network due to the sensitivity of the implementation of the algorithm in R to the scale of input variables.
+
+```{r}
+
+scaled_data <- scale(downsampled_train_data[, -ncol(downsampled_train_data)])
+scaled_train_data <- data.frame(scaled_data, label = downsampled_train_data$label)
+
+```
+
+Then, as was done with the Random Forest model, the team trained the Neural Network with varying architectural parameters and visualizing the tuning process to identify the best model settings.
+
+```{r}
+
+# Setup for Neural Network training
+control_nn <- trainControl(method = "cv", number = 5, savePredictions = "final")
+grid_nn <- expand.grid(.size = c(5, 10), .decay = c(0.1, 0.01))
+
+# Train the Neural Network
+set.seed(123)
+nn_model <- train(label ~ ., data = scaled_train_data, method = "nnet", trControl = control_nn, tuneGrid = grid_nn, trace = FALSE)
+
+```
+
+We can then plot the model's performance.
+
+```{r}
+
+plot(nn_model)
+
+```
+
+The above plot indicates that the accuracy of the neural network during with a weight decay of 0.01 is improving whilst the number of hidden units increases. Conversly for the 0.1 weight decay, accuracy remains relatively stable and slightly declines as the number of hidden units increase, indicating that a higher weight decay may be too restrictive, preventing the model from fully leveraging the additional hidden units.
+
+## Model Evaluation
+
+### Predictions and Confusion Matrix
+
+We use the trained models to make predictions on the test set and evaluate their performance using confusion matrices.
+
+```{r}
+# Column names in the test set match the training data
+colnames(test_data) <- colnames(downsampled_train_data)[1:(ncol(downsampled_train_data) - 1)]  # Exclude the label column
+
+# Check if the label column is present and correctly populated
+if ("label" %in% colnames(combined_data) && length(combined_data[-train_index, "label"]) == nrow(test_data)) {
+    # Assign the label to test_data
+    test_data$label <- combined_data[-train_index, "label"]
+} else {
+    stop("The label vector is empty or has a different length than expected. Check the data preparation steps.")
+}
+
+# The label is a factor with the correct levels
+test_data$label <- factor(test_data$label, levels = c("OSN", "Other"))
+
+# SVM Predictions on the test set
+svm_test_pred <- predict(svm_model, newdata = test_data[, -ncol(test_data)], probability = TRUE)
+svm_test_prob <- attr(svm_test_pred, "probabilities")[, "OSN"]
+
+# Random Forest Predictions on the test set
+rf_test_pred <- predict(rf_model, newdata = test_data[, -ncol(test_data)], type = "prob")[, "OSN"]
+
+# SVM Confusion Matrix on the test set
+svm_test_conf_matrix <- table(Predicted = ifelse(svm_test_prob > 0.5, "OSN", "Other"), Actual = test_data$label)
+print("SVM Test Confusion Matrix:")
+print(svm_test_conf_matrix)
+
+# Random Forest Confusion Matrix on the test set
+rf_test_conf_matrix <- table(Predicted = ifelse(rf_test_pred > 0.5, "OSN", "Other"), Actual = test_data$label)
+print("Random Forest Test Confusion Matrix:")
+print(rf_test_conf_matrix)
+
+```
+
+## ROC Curve and AUC
+To further assess model performance, we plot the ROC curves and calculate the AUC for both the SVM and Random Forest models.
+
+```{r}
+
+# Evaluate the models on the test set (AUC and ROC)
+svm_test_roc <- roc(test_data$label, svm_test_prob)
+plot(svm_test_roc, main = "SVM ROC Curve")
+print(paste("Final SVM Test AUC:", auc(svm_test_roc)))
+
+rf_test_roc <- roc(test_data$label, rf_test_pred)
+plot(rf_test_roc, main = "Random Forest ROC Curve")
+print(paste("Final Random Forest Test AUC:", auc(rf_test_roc)))
+
+```
+
+## Results
+
+Lets analyse the results of the overall study as a comparison with the with the previous study. 
+
+The first and main outcome of the study is classifying target genes as target genes. However it may useful to get a probabilities for each gene. This was part of the motivation to use SVM as our first and main source of classification. Below is a table with the probabilities. Potentially using this 
+
+```{r}
+svm_predictions <- predict(svm_model, newdata = combined_data, probability = TRUE)
+
+probabilities <- attr(svm_predictions, "probabilities")
+
+# Combine predictions with the original data and probabilities
+results <- data.frame(
+  Actual_Label = combined_data$label,
+  Predicted_Label = svm_predictions,
+  OSN_Prob = probabilities[, "OSN"],
+  Other_Prob = probabilities[, "Other"]
+)
+
+print(head(results))
+```
+
+Before we continue and analyse the classification of the various models, let's visit `OSN_target_genes`
+
+```{r}
+
+length(OSN_target_genes)
+OSN_target_genes
+
+```
+
+Roughly we have 2000 target genes predicted for each of our models compared to 400 from the previus study. This may because of the higher time resolution of the previous study or potentially other reasons.
+
+
+## Future Directions:
+
+### Model Improvement
+
+#### Methods of mitigating Class Imbalance
+
+At the moment we have used Ensemble models, and downsampling to mitigate the massive class imbalance. It may be worth looking into other methods, or even not accounting for the imblance and training the models. Our results show clear overclassification of OSN which may be from the downsampling.
+
+#### Model Improvement
+
+Further hyperparameter tuning using automated methods like grid search or random search could refine the model's accuracy. Additionally, exploring ensemble methods that combine predictions from several models might yield better results.
+
+### Data Expansion
+
+Incorporating additional omics layers, such as metabolomics or additional transcription factor binding profiles, could help to improve the model's predictive power and generalisability.
+
+### Integration with Clinical Data
+
+Linking omics profiles with clinical outcomes could also be explored to improve the translational impact of the research.
+
+\newpage
+
+# Reference List
+
+Theunissen, T. W., & Jaenisch, R. (2017). Molecular control of pluripotency and cellular reprogramming. *Nature Reviews Molecular Cell Biology*, 18(12), 743–757. [https://doi.org/10.1038/nrm.2017.15](https://doi.org/10.1038/nrm.2017.15)
+
+Masui, S., et al. (2007). Pluripotency governed by Sox2 via regulation of Oct3/4 expression in mouse embryonic stem cells. *Nature Cell Biology*, 9(6), 625–635. [https://doi.org/10.1038/nature06015](https://doi.org/10.1038/nature06015)
+
+Yang, Y., et al. (2019). Dissecting the global dynamic molecular profiles of human fetal kidney development by single-cell RNA sequencing. *Cell Reports*, 28(8), 3254-3264.e5. [https://doi.org/10.1016/j.cell.2019.02.035](https://doi.org/10.1016/j.cell.2019.02.035)

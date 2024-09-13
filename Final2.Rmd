@@ -1,0 +1,143 @@
+---
+title: "Finalv2"
+output: pdf_document
+date: "2024-08-21"
+---
+
+```{r}
+
+```
+
+
+```{r}
+load("Final_Project_ESC.RData", verbose=TRUE)
+
+suppressPackageStartupMessages({
+    library(e1071)
+    library(ggplot2)
+    library(ROCR)
+    library(dplyr)
+    library(tibble)
+})
+
+```
+## Example for PCA on Transcriptome Data
+
+```{r}
+# Explore Transcriptome Data
+head(Transcriptome)
+dim(Transcriptome)
+
+# Perform PCA
+cor.mat <- cor(Transcriptome)
+pca.mat <- prcomp(cor.mat)
+grp <- rownames(pca.mat$x)
+grp.col <- rainbow(nrow(pca.mat$x))
+names(grp.col) <- rownames(pca.mat$x)
+plot(pca.mat$x[,1], pca.mat$x[,2], col=grp.col[grp], pch=19, cex=2, 
+     xlab=paste0("PC1_(", round(summary(pca.mat)$importance[2,1]*100,1), "% variance)"),
+     ylab=paste0("PC2_(", round(summary(pca.mat)$importance[2,2]*100,1), "% variance)"))
+
+```
+## Combining Transcriptome and Proteome Data
+
+```{r}
+# Find intersecting genes
+genes <- intersect(rownames(Transcriptome), rownames(Proteome))
+Transcriptome_filter <- Transcriptome[which(rownames(Transcriptome) %in% genes),]
+Proteome_filter <- Proteome[which(rownames(Proteome) %in% genes),]
+
+# Ensure correct order
+Transcriptome_filter <- Transcriptome_filter[order(rownames(Transcriptome_filter)),]
+Proteome_filter <- Proteome_filter[order(rownames(Proteome_filter)),]
+
+# Rename columns to avoid duplication
+colnames(Transcriptome_filter) <- paste("T_", colnames(Transcriptome_filter), sep = "")
+colnames(Proteome_filter) <- paste("P_", colnames(Proteome_filter), sep = "")
+x=
+# Combine the datasets
+dat <- cbind(Transcriptome_filter, Proteome_filter)
+
+# Labeling known and unknown target genes
+label <- ifelse(genes %in% OSN_target_genes_subset, "OSN", "Other")
+dat <- data.frame(dat)
+dat$label <- factor(label)
+
+```
+
+## Address the imbalance in the dataset by downsampling the majority class or using more sophisticated techniques like SMOTE
+
+```{r}
+# Downsample the "Other" class
+set.seed(123)
+selection <- sample(which(label == "Other"), 100)
+selection <- c(which(label == "OSN"), selection)
+dat_train <- dat[selection,]
+
+```
+
+## Model Training
+
+```{r}
+set.seed(123)
+model <- svm(formula = label ~ ., data = dat_train, kernel = "radial", probability = TRUE)
+
+pred <- predict(model, newdata = dat[,-which(grepl("label", colnames(dat)))], probability = TRUE, decision.values = TRUE)
+prob <- attr(pred, "probabilities")[,2]
+
+```
+
+```{r}
+true_label <- factor(ifelse(rownames(dat) %in% OSN_target_genes, "OSN", "Other"))
+
+# Confusion matrix
+table(pred, true_label)
+
+# ROC curve
+roc.pred <- prediction(prob, true_label)
+perf <- performance(roc.pred, "tpr", "fpr")
+
+plt_dat <- data.frame(
+    FPR = perf@x.values[[1]],
+    TPR = perf@y.values[[1]]
+)
+
+ggplot(plt_dat, aes(x = FPR, y = TPR)) +
+    geom_line(colour = "blue") +
+    labs(x = perf@x.name, y = perf@y.name) +
+    geom_abline(slope = 1, intercept = 0)
+
+```
+```{r}
+OSN_gene_candidate <- OSN_gene_prob[OSN_gene_prob > 0.7]
+if (length(OSN_gene_candidate) == 0) {
+    warning("No genes meet the probability threshold of 0.7")
+}
+
+```
+
+
+```{r}
+OSN_gene_prob <- attr(pred, "probabilities")[,"OSN"]
+
+OSN_gene_candidate <- OSN_gene_prob[OSN_gene_prob > 0.5]
+length(names(OSN_gene_candidate))
+
+OSN_dat_candidate <- dat[which(rownames(dat) %in% names(OSN_gene_candidate)),]
+OSN_dat_candidate$label <- NULL
+OSN_dat_candidate <- OSN_dat_candidate %>%
+  add_column(genes = rownames(.), .before = 1)
+OSN_dat_candidate_long <- reshape2::melt(OSN_dat_candidate)
+
+ggplot(OSN_dat_candidate_long, aes(x = variable, y = value)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), aspect.ratio = 1) +
+  ggtitle("Expression profiles of target genes predicted for Sox2/Nanog (probabilities > 0.7)")
+
+```
+```{r}
+head(OSN_dat)
+
+```
+
+
